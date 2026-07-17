@@ -1,0 +1,29 @@
+[Unit]
+Description=High-performance Tailscale DERP relay (Rust)
+Documentation=https://github.com/jaisonZheng/derp-rs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=derper-rs
+Group=derper-rs
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ExecStart=/usr/local/bin/derper-rs \
+  --addr 0.0.0.0:443 \
+  --stun-addr 0.0.0.0:3478 \
+  --private-key /var/lib/derper-rs/derper.key \
+  --tls-cert /etc/derper-rs/fullchain.pem \
+  --tls-key /etc/derper-rs/privkey.pem
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/derper-rs
+
+[Install]
+WantedBy=multi-user.target
