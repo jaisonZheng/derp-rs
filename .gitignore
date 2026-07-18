@@ -1,5 +1,6 @@
 /target/
 /work/
+/tmp/
 derper.key
 *.pem
 *.key
