@@ -127,8 +127,13 @@ systemd 示例位于 [`deploy/derper-rs.service`](deploy/derper-rs.service)。
 ```bash
 cargo test --all-targets --locked
 cargo clippy --all-targets --locked -- -D warnings
+./scripts/official-conformance.sh
 ./scripts/benchmark.sh
 ```
+
+一致性套件会启动 release 二进制，并用 Tailscale 官方 Go 客户端和社区公开测试行为
+执行进程外黑盒验证。测试来源、适配原则和覆盖矩阵见
+[`docs/CONFORMANCE.md`](docs/CONFORMANCE.md)。
 
 同机五轮中位数（Apple M3，16 个官方 Go DERP 客户端，1200 字节载荷，
 每轮 256,000 包）：

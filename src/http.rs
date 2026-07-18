@@ -81,9 +81,11 @@ pub async fn serve_connection(
             .serve_stream(Box::new(PrefixedIo::new(leftover, io)), remote, not_ideal)
             .await;
     }
-    match request.path.split('?').next().unwrap_or("") {
+    let clean_path = request.path.split('?').next().unwrap_or("");
+    match clean_path {
         "/derp/probe"|"/derp/latency-check" if request.method=="GET"||request.method=="HEAD"=>write_response(&mut io,200,"OK",&[("Access-Control-Allow-Origin","*")],b"").await?,
         "/derp/probe"|"/derp/latency-check"=>write_response(&mut io,405,"Method Not Allowed",&[],b"bogus probe method\n").await?,
+        path if path.starts_with("/derp/")=>write_response(&mut io,426,"Upgrade Required",&[("Content-Type","text/plain")],b"DERP requires connection upgrade\n").await?,
         "/generate_204"=>{let mut headers=vec![("Cache-Control","no-cache, no-store, must-revalidate, no-transform, max-age=0")];let response; if let Some(challenge)=request.headers.get("x-tailscale-challenge").filter(|s|s.len()<=64&&s.chars().all(valid_challenge)){response=format!("response {challenge}");headers.push(("X-Tailscale-Response",&response));}write_response(&mut io,204,"No Content",&headers,b"").await?;},
         "/bootstrap-dns"=>{let body=if let Some(path)=&server.config.bootstrap_dns_file{tokio::fs::read(path).await.unwrap_or_else(|_|b"{}\n".to_vec())}else{b"{}\n".to_vec()};write_response(&mut io,200,"OK",&[("Content-Type","application/json"),("Access-Control-Allow-Origin","*")],&body).await?;},
         "/metrics"|"/debug/vars"=>{let body=server.relay.metrics.prometheus();write_response(&mut io,200,"OK",&[("Content-Type","text/plain; version=0.0.4")],body.as_bytes()).await?;},
