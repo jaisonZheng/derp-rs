@@ -9,20 +9,24 @@
 Tailscale 公布了 DERP 测试，但它们大多把 Go `derpserver.Server` 直接嵌入同一个测试
 进程，不能通过地址参数直接测试第三方服务器：
 
-- `derp/derp_test.go`：转发、PeerGone、Ping/Pong、watch、preferred 状态；
-- `derp/derphttp/derphttp_test.go`：官方 HTTP 客户端、Ping、probe、mesh watcher；
-- `derp/derpserver/derpserver_test.go`：重复连接、mesh、限速及服务端内部状态；
-- `net/stun/stun_test.go`：官方 STUN 报文生成和解析。
+- [`derp/derp_test.go`](https://github.com/tailscale/tailscale/blob/main/derp/derp_test.go)：
+  转发、PeerGone、Ping/Pong、watch、preferred 状态；
+- [`derp/derphttp/derphttp_test.go`](https://github.com/tailscale/tailscale/blob/main/derp/derphttp/derphttp_test.go)：
+  官方 HTTP 客户端、Ping、probe、mesh watcher；
+- [`derp/derpserver/derpserver_test.go`](https://github.com/tailscale/tailscale/blob/main/derp/derpserver/derpserver_test.go)：
+  重复连接、mesh、限速及服务端内部状态；
+- [`net/stun/stun_test.go`](https://github.com/tailscale/tailscale/blob/main/net/stun/stun_test.go)：
+  官方 STUN 报文生成和解析。
 
 本项目在 `bench/conformance/official_test.go` 中把可观察的线缆级行为改写成外部服务器
 测试。服务端内部数据结构、Go 特有并发实现、XDP 和只测试客户端错误处理的用例不适合
 直接移植，仍由本项目自己的 Rust 单元测试、集成测试和压力测试覆盖。
 
-社区方面，`rajsinghtech/rustscale` 的 `crates/derp/src/server.rs` 公布了一个用于集成
-测试的简化 DERP server 及测试。本项目移植了其中可兼容官方协议的双向转发、最新连接
-路由和非 Fast Start Upgrade 行为。它的“新连接关闭同 key 旧连接”规则与 Tailscale
-当前的重复连接 Health 语义不同，因此只采用双方一致的“最新连接接收新流量”，并继续
-按官方行为验证旧连接收到 Health、恢复时收到空 Health。
+社区方面，[`rajsinghtech/rustscale` 的 `crates/derp/src/server.rs`](https://github.com/rajsinghtech/rustscale/blob/master/crates/derp/src/server.rs)
+公布了一个用于集成测试的简化 DERP server 及测试。本项目移植了其中可兼容官方协议的
+双向转发、最新连接路由和非 Fast Start Upgrade 行为。它的“新连接关闭同 key 旧连接”
+规则与 Tailscale 当前的重复连接 Health 语义不同，因此只采用双方一致的“最新连接接收
+新流量”，并继续按官方行为验证旧连接收到 Health、恢复时收到空 Health。
 
 ## 当前黑盒覆盖
 
@@ -56,3 +60,16 @@ DERP_PORT=43340 STUN_PORT=43478 scripts/official-conformance.sh
 ```
 
 该套件已接入 GitHub Actions；任何官方客户端互操作行为回归都会使 CI 失败。
+
+## 已验证结果
+
+2026-07-18 在提交 `34b7283d50911dfce2dd04c68a66f300ba0f45d2` 上验证：
+
+| 环境 | 被测程序 | 结果 |
+|---|---|---:|
+| Apple Silicon macOS，本机 release 进程 | `derper-rs` | 12/12 通过 |
+| 腾讯云 Ubuntu 24.04 x86_64，CI release ELF | `derper-rs` | 12/12 通过 |
+| GitHub Actions Ubuntu | Rust 测试、Clippy、黑盒套件 | 全部通过 |
+
+Linux 被测二进制 SHA-256：
+`e0c583626158fbdc5b6e7a1486a910926d1c98cc78816a1ba6bc0617735d433a`。
