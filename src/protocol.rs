@@ -145,77 +145,95 @@ impl Frame {
     }
 
     pub fn encode(&self) -> Result<Bytes, ProtocolError> {
-        let mut payload = BytesMut::new();
-        match self {
-            Self::ServerKey(key) => {
-                payload.extend_from_slice(MAGIC);
-                payload.extend_from_slice(key.as_bytes());
-            }
-            Self::ClientInfo { key, sealed } => {
-                payload.extend_from_slice(key.as_bytes());
-                payload.extend_from_slice(sealed);
-            }
-            Self::ServerInfo(sealed) | Self::Health(sealed) => payload.extend_from_slice(sealed),
-            Self::SendPacket { dst, packet } => {
-                validate_packet(packet)?;
-                payload.extend_from_slice(dst.as_bytes());
-                payload.extend_from_slice(packet);
-            }
-            Self::ForwardPacket { src, dst, packet } => {
-                validate_packet(packet)?;
-                payload.extend_from_slice(src.as_bytes());
-                payload.extend_from_slice(dst.as_bytes());
-                payload.extend_from_slice(packet);
-            }
-            Self::RecvPacket { src, packet } => {
-                validate_packet(packet)?;
-                payload.extend_from_slice(src.as_bytes());
-                payload.extend_from_slice(packet);
-            }
-            Self::KeepAlive | Self::WatchConns => {}
-            Self::NotePreferred(value) => payload.put_u8(u8::from(*value)),
-            Self::PeerGone { peer, reason } => {
-                payload.extend_from_slice(peer.as_bytes());
-                payload.put_u8(*reason);
-            }
-            Self::PeerPresent {
-                peer,
-                endpoint,
-                flags,
-                extra,
-            } => {
-                payload.extend_from_slice(peer.as_bytes());
-                if let Some(endpoint) = endpoint {
-                    let ip = match endpoint.ip() {
-                        IpAddr::V4(v4) => v4.to_ipv6_mapped(),
-                        IpAddr::V6(v6) => v6,
-                    };
-                    payload.extend_from_slice(&ip.octets());
-                    payload.put_u16(endpoint.port());
-                    if let Some(flags) = flags {
-                        payload.put_u8(*flags);
-                    }
-                    payload.extend_from_slice(extra);
-                }
-            }
-            Self::ClosePeer(peer) => payload.extend_from_slice(peer.as_bytes()),
-            Self::Ping(value) | Self::Pong(value) => payload.extend_from_slice(value),
-            Self::Restarting {
-                reconnect_in_ms,
-                try_for_ms,
-            } => {
-                payload.put_u32(*reconnect_in_ms);
-                payload.put_u32(*try_for_ms);
-            }
-            Self::Unknown { payload: value, .. } => payload.extend_from_slice(value),
-        }
-        let len = u32::try_from(payload.len())
-            .map_err(|_| ProtocolError::FrameTooLarge(payload.len()))?;
-        let mut out = BytesMut::with_capacity(FRAME_HEADER_LEN + payload.len());
-        out.put_u8(self.kind());
-        out.put_u32(len);
-        out.extend_from_slice(&payload);
+        let mut out = BytesMut::new();
+        self.encode_into(&mut out)?;
         Ok(out.freeze())
+    }
+
+    /// Appends an encoded frame directly to an existing batch buffer.
+    ///
+    /// The server writer uses this to avoid a temporary payload allocation
+    /// and an extra payload copy for every forwarded packet.
+    pub fn encode_into(&self, out: &mut BytesMut) -> Result<(), ProtocolError> {
+        let frame_start = out.len();
+        out.put_u8(self.kind());
+        out.put_u32(0);
+        let payload_start = out.len();
+        let encoded = (|| {
+            match self {
+                Self::ServerKey(key) => {
+                    out.extend_from_slice(MAGIC);
+                    out.extend_from_slice(key.as_bytes());
+                }
+                Self::ClientInfo { key, sealed } => {
+                    out.extend_from_slice(key.as_bytes());
+                    out.extend_from_slice(sealed);
+                }
+                Self::ServerInfo(sealed) | Self::Health(sealed) => out.extend_from_slice(sealed),
+                Self::SendPacket { dst, packet } => {
+                    validate_packet(packet)?;
+                    out.extend_from_slice(dst.as_bytes());
+                    out.extend_from_slice(packet);
+                }
+                Self::ForwardPacket { src, dst, packet } => {
+                    validate_packet(packet)?;
+                    out.extend_from_slice(src.as_bytes());
+                    out.extend_from_slice(dst.as_bytes());
+                    out.extend_from_slice(packet);
+                }
+                Self::RecvPacket { src, packet } => {
+                    validate_packet(packet)?;
+                    out.extend_from_slice(src.as_bytes());
+                    out.extend_from_slice(packet);
+                }
+                Self::KeepAlive | Self::WatchConns => {}
+                Self::NotePreferred(value) => out.put_u8(u8::from(*value)),
+                Self::PeerGone { peer, reason } => {
+                    out.extend_from_slice(peer.as_bytes());
+                    out.put_u8(*reason);
+                }
+                Self::PeerPresent {
+                    peer,
+                    endpoint,
+                    flags,
+                    extra,
+                } => {
+                    out.extend_from_slice(peer.as_bytes());
+                    if let Some(endpoint) = endpoint {
+                        let ip = match endpoint.ip() {
+                            IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+                            IpAddr::V6(v6) => v6,
+                        };
+                        out.extend_from_slice(&ip.octets());
+                        out.put_u16(endpoint.port());
+                        if let Some(flags) = flags {
+                            out.put_u8(*flags);
+                        }
+                        out.extend_from_slice(extra);
+                    }
+                }
+                Self::ClosePeer(peer) => out.extend_from_slice(peer.as_bytes()),
+                Self::Ping(value) | Self::Pong(value) => out.extend_from_slice(value),
+                Self::Restarting {
+                    reconnect_in_ms,
+                    try_for_ms,
+                } => {
+                    out.put_u32(*reconnect_in_ms);
+                    out.put_u32(*try_for_ms);
+                }
+                Self::Unknown { payload, .. } => out.extend_from_slice(payload),
+            }
+            let payload_len = out.len() - payload_start;
+            let payload_len = u32::try_from(payload_len)
+                .map_err(|_| ProtocolError::FrameTooLarge(payload_len))?;
+            out[frame_start + 1..frame_start + FRAME_HEADER_LEN]
+                .copy_from_slice(&payload_len.to_be_bytes());
+            Ok(())
+        })();
+        if encoded.is_err() {
+            out.truncate(frame_start);
+        }
+        encoded
     }
 
     pub fn decode(kind: u8, payload: Bytes) -> Result<Self, ProtocolError> {
@@ -490,5 +508,29 @@ mod tests {
         let raw = Frame::ServerKey(key).encode().unwrap();
         assert_eq!(&raw[..5], &[1, 0, 0, 0, 40]);
         assert_eq!(&raw[5..13], MAGIC);
+    }
+
+    #[test]
+    fn encodes_multiple_frames_into_one_batch() {
+        let frames = [
+            Frame::Ping(*b"12345678"),
+            Frame::Health(Bytes::from_static(b"healthy")),
+            Frame::KeepAlive,
+        ];
+        let mut batch = BytesMut::new();
+        for frame in &frames {
+            frame.encode_into(&mut batch).unwrap();
+        }
+        let mut batch = batch.freeze();
+        for frame in frames {
+            let kind = batch[0];
+            let len = u32::from_be_bytes(batch[1..5].try_into().unwrap()) as usize;
+            let encoded = batch.split_to(FRAME_HEADER_LEN + len);
+            assert_eq!(
+                Frame::decode(kind, encoded.slice(FRAME_HEADER_LEN..)).unwrap(),
+                frame
+            );
+        }
+        assert!(batch.is_empty());
     }
 }

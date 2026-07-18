@@ -11,6 +11,7 @@ use std::{
 use bytes::Bytes;
 use dashmap::{DashMap, DashSet, mapref::entry::Entry};
 use parking_lot::Mutex;
+use smallvec::SmallVec;
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 
@@ -31,8 +32,8 @@ pub struct SessionHandle {
     pub is_prober: bool,
     pub not_ideal: bool,
     tx: mpsc::Sender<Frame>,
-    closed: Arc<AtomicBool>,
-    duplicate: Arc<AtomicBool>,
+    closed: AtomicBool,
+    duplicate: AtomicBool,
     preferred: AtomicBool,
     preferred_seen: AtomicBool,
     seen_sources: Mutex<HashSet<NodeKey>>,
@@ -116,7 +117,7 @@ fn looks_like_disco_wrapper(packet: &[u8]) -> bool {
 }
 
 struct PeerSet {
-    sessions: Vec<Arc<SessionHandle>>,
+    sessions: SmallVec<[Arc<SessionHandle>; 1]>,
     active: SessionId,
 }
 impl PeerSet {
@@ -204,8 +205,8 @@ impl Relay {
             is_prober,
             not_ideal,
             tx,
-            closed: Arc::new(AtomicBool::new(false)),
-            duplicate: Arc::new(AtomicBool::new(false)),
+            closed: AtomicBool::new(false),
+            duplicate: AtomicBool::new(false),
             preferred: AtomicBool::new(false),
             preferred_seen: AtomicBool::new(false),
             seen_sources: Mutex::new(HashSet::new()),
@@ -215,7 +216,7 @@ impl Relay {
             Entry::Occupied(e) => e.get().clone(),
             Entry::Vacant(e) => e
                 .insert(Arc::new(Mutex::new(PeerSet {
-                    sessions: Vec::new(),
+                    sessions: SmallVec::new(),
                     active: id,
                 })))
                 .clone(),

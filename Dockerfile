@@ -4,6 +4,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release --locked
 
+FROM scratch AS binary
+COPY --from=builder /src/target/release/derper-rs /derper-rs
+
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

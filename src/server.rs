@@ -5,11 +5,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter, split},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, split},
     time::{interval, timeout},
 };
 use tracing::{debug, warn};
@@ -179,29 +179,41 @@ impl DerpServer {
 
     async fn writer<W: AsyncWrite + Unpin>(
         &self,
-        write: W,
+        mut write: W,
         handle: &SessionHandle,
         rx: &mut tokio::sync::mpsc::Receiver<Frame>,
     ) -> Result<()> {
-        let mut write = BufWriter::with_capacity(64 << 10, write);
+        const SHRINK_AFTER: Duration = Duration::from_secs(15);
+        let mut batch = BytesMut::new();
+        let mut last_data_write = Instant::now();
         let mut keepalive = interval(Duration::from_secs(60));
         keepalive.tick().await;
         let mut close_check = interval(Duration::from_millis(250));
         close_check.tick().await;
+        let mut shrink_check = interval(SHRINK_AFTER);
+        shrink_check.tick().await;
         loop {
             tokio::select! {
                 biased;
-                frame=rx.recv()=>{let Some(frame)=frame else{return Ok(())};self.write_batch(&mut write,frame,rx).await?;}
+                frame=rx.recv()=>{
+                    let Some(frame)=frame else{return Ok(())};
+                    self.write_batch(&mut write,frame,rx,&mut batch).await?;
+                    last_data_write=Instant::now();
+                }
                 _=keepalive.tick()=>{
                     let frame = if handle.can_ack_pings {
                         Frame::Ping(rand_core::OsRng.next_u64().to_be_bytes())
                     } else {
                         Frame::KeepAlive
                     };
-                    protocol::write_frame(&mut write,&frame).await?;
-                    write.flush().await?;
+                    self.write_control(&mut write,&frame,&mut batch).await?;
                 }
                 _=close_check.tick()=>{if handle.is_closed(){return Ok(());}}
+                _=shrink_check.tick()=>{
+                    if batch.capacity() > (8 << 10) && last_data_write.elapsed() >= SHRINK_AFTER {
+                        batch=BytesMut::new();
+                    }
+                }
             }
         }
     }
@@ -211,21 +223,46 @@ impl DerpServer {
         write: &mut W,
         first: Frame,
         rx: &mut tokio::sync::mpsc::Receiver<Frame>,
+        batch: &mut BytesMut,
     ) -> Result<()> {
+        const MAX_BATCH_BYTES: usize = 64 << 10;
         let duration = self.config.write_timeout;
         timeout(duration, async {
-            protocol::write_frame(write, &first).await?;
+            batch.clear();
+            first.encode_into(batch)?;
             for _ in 0..63 {
+                if batch.len() >= MAX_BATCH_BYTES {
+                    break;
+                }
                 match rx.try_recv() {
-                    Ok(frame) => protocol::write_frame(write, &frame).await?,
+                    Ok(frame) => frame.encode_into(batch)?,
                     Err(_) => break,
                 }
             }
+            write.write_all(batch).await?;
             write.flush().await?;
             Ok::<(), anyhow::Error>(())
         })
         .await
         .context("DERP write timeout")??;
+        Ok(())
+    }
+
+    async fn write_control<W: AsyncWrite + Unpin>(
+        &self,
+        write: &mut W,
+        frame: &Frame,
+        batch: &mut BytesMut,
+    ) -> Result<()> {
+        batch.clear();
+        frame.encode_into(batch)?;
+        timeout(self.config.write_timeout, async {
+            write.write_all(batch).await?;
+            write.flush().await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .context("DERP control write timeout")??;
         Ok(())
     }
 
