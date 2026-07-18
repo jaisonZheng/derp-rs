@@ -135,11 +135,16 @@ cargo clippy --all-targets --locked -- -D warnings
 
 | 服务端 | 包/秒中位数 | 有效载荷 | RSS |
 | --- | ---: | ---: | ---: |
-| derp-rs 0.1.0 | 313,906 | 3.013 Gbit/s | 4,624 KiB |
-| Tailscale derper v1.100.0 | 248,927 | 2.390 Gbit/s | 17,968 KiB |
+| derp-rs 0.1.0 | 366,442 | 3.518 Gbit/s | 4,704 KiB |
+| Tailscale derper v1.100.0 | 263,363 | 2.528 Gbit/s | 22,208 KiB |
 
-该环境下 Rust 中位吞吐高 26.10%，RSS 低 74.27%。完整参数、五轮原始数据、
+该环境下 Rust 中位吞吐高 39.14%，RSS 低 78.82%。完整参数、五轮原始数据、
 方法和限制见 [`docs/BENCHMARK.md`](docs/BENCHMARK.md)。
+
+生产规模 RSS 另在 2 vCPU Linux 主机上使用 100–10,000 个连接验证，覆盖
+明文、TLS、持续转发、慢接收端和连接抖动。在全部已测场景中，Rust 稳态 RSS
+低 62.38%–71.36%，峰值 RSS 低 62.38%–79.85%。完整原始数据、方法和结论边界
+见 [`docs/RSS-BENCHMARK.md`](docs/RSS-BENCHMARK.md)。
 
 ## 设计
 

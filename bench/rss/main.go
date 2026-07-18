@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -27,6 +28,9 @@ var (
 	pps         = flag.Int("pps", 10000, "aggregate packets/second in active mode; zero saturates")
 	dialers     = flag.Int("dialers", 128, "parallel connection attempts")
 	slowBurst   = flag.Int("slow-burst", 64, "packets sent to each slow client before steady state")
+	useTLS      = flag.Bool("tls", false, "connect with TLS; test certificates are not verified")
+	churnBatch  = flag.Int("churn-batch", 0, "connections replaced per churn cycle; zero uses 10%")
+	churnEvery  = flag.Duration("churn-every", 500*time.Millisecond, "delay between churn cycles")
 )
 
 type client struct {
@@ -36,9 +40,22 @@ type client struct {
 }
 
 func dial(addr string) (*client, error) {
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	raw, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
+	}
+	conn := raw
+	if *useTLS {
+		tlsConn := tls.Client(raw, &tls.Config{
+			ServerName:         "localhost",
+			InsecureSkipVerify: true, // Test-only self-signed certificate.
+		})
+		if err := tlsConn.Handshake(); err != nil {
+			raw.Close()
+			return nil, err
+		}
+		conn = tlsConn
 	}
 	br := bufio.NewReaderSize(conn, 64<<10)
 	bw := bufio.NewWriterSize(conn, 64<<10)
@@ -198,13 +215,46 @@ func runSlow(clients []*client, payload []byte, sent *atomic.Uint64) error {
 	return <-errs
 }
 
+func runChurn(clients []*client, delivered *atomic.Uint64) (uint64, error) {
+	batchSize := *churnBatch
+	if batchSize == 0 {
+		batchSize = max(1, len(clients)/10)
+	}
+	batchSize = min(batchSize, len(clients))
+	deadline := time.Now().Add(*duration)
+	offset := 0
+	var replaced uint64
+	for time.Now().Before(deadline) {
+		indices := make([]int, batchSize)
+		for i := range batchSize {
+			index := (offset + i) % len(clients)
+			indices[i] = index
+			clients[index].conn.Close()
+		}
+		replacements, err := connectAll(batchSize)
+		if err != nil {
+			return replaced, err
+		}
+		for i, index := range indices {
+			clients[index] = replacements[i]
+		}
+		startReaders(replacements, delivered)
+		replaced += uint64(batchSize)
+		offset = (offset + batchSize) % len(clients)
+		if remaining := time.Until(deadline); remaining > 0 {
+			time.Sleep(min(*churnEvery, remaining))
+		}
+	}
+	return replaced, nil
+}
+
 func main() {
 	flag.Parse()
 	if *clientCount < 2 || *packetSize < 1 || *duration <= 0 {
 		log.Fatal("invalid arguments")
 	}
 	switch *mode {
-	case "idle", "active", "slow":
+	case "idle", "active", "slow", "churn":
 	default:
 		log.Fatalf("unknown mode %q", *mode)
 	}
@@ -223,6 +273,7 @@ func main() {
 		payload[i] = byte(i)
 	}
 	var sent, delivered atomic.Uint64
+	var replaced uint64
 	switch *mode {
 	case "idle":
 		startReaders(clients, &delivered)
@@ -241,6 +292,13 @@ func main() {
 		}
 		fmt.Printf("READY mode=%s clients=%d\n", *mode, len(clients))
 		time.Sleep(*duration)
+	case "churn":
+		startReaders(clients, &delivered)
+		fmt.Printf("READY mode=%s clients=%d\n", *mode, len(clients))
+		replaced, err = runChurn(clients, &delivered)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	result := map[string]any{
@@ -250,6 +308,7 @@ func main() {
 		"sent":        sent.Load(),
 		"delivered":   delivered.Load(),
 		"packet_size": *packetSize,
+		"replaced":    replaced,
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil && err != io.ErrClosedPipe {
 		log.Fatal(err)

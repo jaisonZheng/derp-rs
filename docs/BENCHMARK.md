@@ -34,11 +34,11 @@ then executes the same workload against each implementation.
 
 | Server | packets/s runs | Median packets/s | Median payload | RSS sample |
 | --- | --- | ---: | ---: | ---: |
-| derp-rs 0.1.0 | 279,133; 263,318; 313,906; 355,714; 338,843 | 313,906 | 3.013 Gbit/s | 4,624 KiB |
-| Tailscale derper v1.100.0 | 244,223; 248,927; 257,908; 259,970; 236,187 | 248,927 | 2.390 Gbit/s | 17,968 KiB |
+| derp-rs 0.1.0 | 380,213; 366,442; 375,886; 289,351; 312,408 | 366,442 | 3.518 Gbit/s | 4,704 KiB |
+| Tailscale derper v1.100.0 | 259,203; 280,457; 256,018; 263,363; 286,846 | 263,363 | 2.528 Gbit/s | 22,208 KiB |
 
-In this run, derp-rs delivered 26.10% more packets per second at the median and
-used 74.27% less sampled RSS (the Go process used 3.89× as much).
+In this run, derp-rs delivered 39.14% more packets per second at the median and
+used 78.82% less sampled RSS (the Go process used 4.72× as much).
 
 ## Interpretation and limits
 
@@ -51,3 +51,6 @@ Results vary with thermals and background load; the raw runs are included so
 the spread is visible. Use the script on the intended production machine and
 run longer connection-count, slow-client, packet-loss, and TLS tests before
 capacity planning.
+
+For the 100-to-10,000 connection Linux comparison, including TLS,
+backpressure, and churn, see [`RSS-BENCHMARK.md`](RSS-BENCHMARK.md).

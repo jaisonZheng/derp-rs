@@ -6,6 +6,9 @@ ADDR="${ADDR:-127.0.0.1:3342}"
 DURATION="${DURATION:-15s}"
 SERVERS="${SERVERS:-rust go}"
 SCENARIOS="${SCENARIOS:-idle:100 idle:1000 idle:5000 active:100 active:1000 slow:100 slow:1000}"
+TLS_MODE="${TLS_MODE:-0}"
+BASELINE_WARMUP="${BASELINE_WARMUP:-2}"
+RUST_BIN="${RUST_BIN:-target/release/derper-rs}"
 
 cd "$ROOT"
 mkdir -p work
@@ -41,8 +44,12 @@ average_rss() {
 
 wait_ready() {
   local pid="$1" url="$2"
+  local curl_args=(-fsS)
+  if [[ "$TLS_MODE" == "1" ]]; then
+    curl_args+=(-k)
+  fi
   for _ in $(seq 1 300); do
-    if curl -fsS "$url" >/dev/null 2>&1; then
+    if curl "${curl_args[@]}" "$url" >/dev/null 2>&1; then
       return 0
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
@@ -60,12 +67,24 @@ run_case() {
   local client_log="work/rss-${tag}-client.log"
   local peak_file="work/rss-${tag}-peak"
   local cmd
+  local scheme="http"
+  local probe_addr="$ADDR"
+  if [[ "$TLS_MODE" == "1" ]]; then
+    scheme="https"
+    probe_addr="localhost:${ADDR##*:}"
+  fi
   case "$server_name" in
     rust)
-      cmd=(target/release/derper-rs --addr "$ADDR" --stun-addr off --private-key work/rss-rust.key --shutdown-grace 1ms)
+      cmd=("$RUST_BIN" --addr "$ADDR" --stun-addr off --private-key work/rss-rust.key --shutdown-grace 1ms)
+      if [[ "$TLS_MODE" == "1" ]]; then
+        cmd+=(--tls-cert work/rss-certs/localhost.crt --tls-key work/rss-certs/localhost.key)
+      fi
       ;;
     go)
       cmd=(work/derper -a "$ADDR" -stun=false -http-port=-1 -hostname=localhost -c work/rss-go.key)
+      if [[ "$TLS_MODE" == "1" ]]; then
+        cmd+=(-certmode=manual -certdir=work/rss-certs)
+      fi
       ;;
     *)
       echo "unknown server: $server_name" >&2
@@ -75,19 +94,19 @@ run_case() {
 
   "${cmd[@]}" >"$server_log" 2>&1 &
   local server_pid=$!
-  if ! wait_ready "$server_pid" "http://${ADDR}/derp/probe"; then
+  if ! wait_ready "$server_pid" "${scheme}://${probe_addr}/derp/probe"; then
     tail -n 30 "$server_log" >&2
     return 1
   fi
+  sleep "$BASELINE_WARMUP"
   local baseline
   baseline="$(average_rss "$server_pid")"
 
-  work/derp-rss \
-    -addr "$ADDR" \
-    -clients "$clients" \
-    -mode "$mode" \
-    -duration "$DURATION" \
-    >"$client_log" 2>&1 &
+  local load_cmd=(work/derp-rss -addr "$ADDR" -clients "$clients" -mode "$mode" -duration "$DURATION")
+  if [[ "$TLS_MODE" == "1" ]]; then
+    load_cmd+=(-tls)
+  fi
+  "${load_cmd[@]}" >"$client_log" 2>&1 &
   local client_pid=$!
 
   (
@@ -140,6 +159,16 @@ run_case() {
   printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$server_name" "$mode" "$clients" "$baseline" "$steady" "$peak" "$per_connection" "$result"
 }
+
+if [[ "$TLS_MODE" == "1" && ! -f work/rss-certs/localhost.crt ]]; then
+  mkdir -p work/rss-certs
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout work/rss-certs/localhost.key \
+    -out work/rss-certs/localhost.crt \
+    -days 1 -subj '/CN=localhost' \
+    -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+    >/dev/null 2>&1
+fi
 
 echo 'server,mode,clients,baseline_rss_kib,steady_rss_kib,peak_rss_kib,incremental_bytes_per_connection,client_result'
 for scenario in $SCENARIOS; do
